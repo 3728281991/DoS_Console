@@ -2,104 +2,86 @@ import asyncio
 import logging
 import sys
 import html
+import re
 from aiogram import Bot, Dispatcher, types, F
 from aiogram.filters import Command
 from aiogram.types import Message
 
-# --- ОБЯЗАТЕЛЬНО ЗАПОЛНИ ЭТИ ПОЛЯ ---
+# --- НАСТРОЙКИ ---
 TOKEN = "8577086957:AAGSh9ePU6SwSyn3mQC-iIlIT2mqmXCbqew"
-ADMIN_ID = 0  # <--- Твой ID (узнай в @userinfobot)
+ADMIN_ID = 0  # <--- ЗАМЕНИ НА СВОЙ ID (узнай в @userinfobot)
 
-# Настройка логирования для консоли Railway
 logging.basicConfig(level=logging.INFO, stream=sys.stdout)
-logger = logging.getLogger(__name__)
-
 bot = Bot(token=TOKEN)
 dp = Dispatcher()
 
-# Команда /start
+def split_message(text, max_length=3800):
+    """Разрезает текст на части, оборачивая каждую в <pre> для корректного HTML"""
+    parts = []
+    for i in range(0, len(text), max_length):
+        chunk = text[i:i + max_length]
+        # Экранируем спецсимволы и оборачиваем в моноширинный блок
+        safe_chunk = html.escape(chunk)
+        parts.append(f"<pre>{safe_chunk}</pre>")
+    return parts
+
+def remove_ansi(text):
+    """Удаляет ANSI-последовательности (цвета консоли), которые ломают текст"""
+    ansi_escape = re.compile(r'\x1B(?:[@-Z\\-_]|\[[0-?]*[ -/]*[@-~])')
+    return ansi_escape.sub('', text)
+
 @dp.message(Command("start"))
 async def cmd_start(message: Message):
-    if ADMIN_ID != 0 and message.from_user.id != ADMIN_ID:
-        return
-    await message.answer(
-        "<b>🖥 Терминал активен</b>\n\n"
-        "Присылай любую команду (ls, pwd, top) прямым текстом.\n"
-        "<i>Будь осторожен с командами удаления!</i>",
-        parse_mode="HTML"
-    )
+    if ADMIN_ID != 0 and message.from_user.id != ADMIN_ID: return
+    await message.answer("<b>🖥 Терминал активен.</b>\nПрисылай команды (например, <code>nmap -F [IP]</code>).", parse_mode="HTML")
 
-# Основной обработчик консольных команд
 @dp.message(F.text)
 async def execute_console_command(message: Message):
-    # Проверка прав доступа
-    if ADMIN_ID != 0 and message.from_user.id != ADMIN_ID:
-        return
-
-    command = message.text
+    if ADMIN_ID != 0 and message.from_user.id != ADMIN_ID: return
     
-    # Игнорируем другие команды Telegram (начинающиеся с /)
-    if command.startswith('/'):
-        return
+    command = message.text
+    if command.startswith('/'): return
 
     try:
-        # Запуск команды в shell
         process = await asyncio.create_subprocess_shell(
             command,
             stdout=asyncio.subprocess.PIPE,
             stderr=asyncio.subprocess.PIPE
         )
         
-        # Ожидаем завершения (тайм-аут 30 секунд, чтобы бот не завис намертво)
         try:
-            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=30.0)
+            # Увеличим тайм-аут до 5 минут для тяжелых сканов nmap
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=300.0)
         except asyncio.TimeoutError:
             process.kill()
-            await message.answer("⚠️ <b>Ошибка:</b> Превышено время ожидания (30 сек).")
+            await message.answer("⚠️ <b>Тайм-аут (5 мин).</b> Команда была принудительно остановлена.")
             return
 
-        # Декодируем и экранируем спецсимволы для HTML
-        def clean_output(data):
-            text = data.decode('utf-8', errors='ignore').strip()
-            return html.escape(text)
+        out = remove_ansi(stdout.decode('utf-8', errors='ignore').strip())
+        err = remove_ansi(stderr.decode('utf-8', errors='ignore').strip())
 
-        out_text = clean_output(stdout)
-        err_text = clean_output(stderr)
-
-        # Формируем ответ
-        response = ""
-        if out_text:
-            response += f"✅ <b>Вывод:</b>\n<pre>{out_text}</pre>\n"
-        if err_text:
-            response += f"❌ <b>Ошибка:</b>\n<pre>{err_text}</pre>"
+        if out:
+            await message.answer("✅ <b>Вывод:</b>", parse_mode="HTML")
+            for chunk in split_message(out):
+                await message.answer(chunk, parse_mode="HTML")
         
-        if not response:
-            response = "💎 <i>Команда выполнена, вывода нет.</i>"
-
-        # Отправляем ответ частями, если он слишком длинный (лимит ТГ 4096 симв)
-        if len(response) > 4000:
-            for x in range(0, len(response), 4000):
-                await message.answer(response[x:x+4000], parse_mode="HTML")
-        else:
-            await message.answer(response, parse_mode="HTML")
+        if err:
+            await message.answer("❌ <b>Ошибка/Лог:</b>", parse_mode="HTML")
+            for chunk in split_message(err):
+                await message.answer(chunk, parse_mode="HTML")
+        
+        if not out and not err:
+            await message.answer("💎 <i>Выполнено без вывода.</i>", parse_mode="HTML")
 
     except Exception as e:
-        await message.answer(f"⚠️ <b>Системный сбой:</b>\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
+        await message.answer(f"⚠️ <b>Критическая ошибка:</b>\n<code>{html.escape(str(e))}</code>", parse_mode="HTML")
 
 async def main():
-    logger.info("Бот запускается...")
-    
-    # Уведомление в Telegram при успешном старте
     if ADMIN_ID != 0:
         try:
-            await bot.send_message(ADMIN_ID, "🚀 <b>Система запущена на Railway!</b>\nЖду команд...", parse_mode="HTML")
-        except Exception as e:
-            logger.error(f"Не удалось отправить пуш админу: {e}")
-
+            await bot.send_message(ADMIN_ID, "🚀 <b>Бот запущен.</b>\nГотов к выполнению команд.", parse_mode="HTML")
+        except: pass
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
-    try:
-        asyncio.run(main())
-    except (KeyboardInterrupt, SystemExit):
-        logger.info("Бот остановлен.")
+    asyncio.run(main())
