@@ -29,5 +29,4 @@ async def execute_command(message: types.Message):
             result = "Команда выполнена (без вывода)."
             
         # Лимит сообщения в ТГ — 4096 символов, обрежем на всякий случай
-        await message.answer(f"
-http://googleusercontent.com/immersive_entry_chip/0
+        await message.answer(f"http://googleusercontent.com/immersive_entry_chip/0") 
